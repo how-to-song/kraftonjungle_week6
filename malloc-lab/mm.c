@@ -54,8 +54,8 @@ team_t team = {
 #define PACK(size, alloc) ((size) | (alloc))
 
 // p주소에 있는 워드 읽기, 쓰기
-#define GET(p) ((unsigned int *)p)
-#define PUT(p, val) ((unsigned int *)p = (val))
+#define GET(p) (*(unsigned int *)(p))
+#define PUT(p, val) (*(unsigned int *)(p) = (val))
 
 // 크기, 할당비트 읽기
 #define GET_SIZE(p) (GET(p) & ~0x7) // 11...1000으로 뒤에 비트 빼고 크기비트만
@@ -71,11 +71,29 @@ team_t team = {
 // 현재 페이로드에서 더블 워드 만큼 빼면 이전 블록의 풋터, 이전 풋터가 가지고 있는 사이즈만큼 bp에서 빼기 
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
+
+static char *heap_listp;
+
+static void *extend_heap(size_t words);
+
 /*
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
+    // 초기화를 위한 brk포인터 4워드만큼 증가
+    if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1) 
+        return -1;
+
+    PUT(heap_listp, 0);                                 // 패딩
+    PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));      // 프롤로그의 헤더
+    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));      // 프롤로그의 풋터
+    PUT(heap_listp + (3 * WSIZE), PACK(0, 1));          // 에필로그의 헤더
+
+    heap_listp += 2 * WSIZE;                            // 시작을 위해 프롤로그의 헤더 다음으로 이동
+
+    if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
+        return -1;
     return 0;
 }
 
