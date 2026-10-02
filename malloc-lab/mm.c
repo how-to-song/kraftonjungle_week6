@@ -38,9 +38,38 @@ team_t team = {
 #define ALIGNMENT 8
 
 /* rounds up to the nearest multiple of ALIGNMENT */
+/* ~0x7 = 0xFFFFFFFF8 = 111...1000  8의 배수로 반올림*/
 #define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0x7)
 
+// size_t의 크기를 8의 배수로 반올림한 크기 SIZE_T_SIZE
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
+
+#define WSIZE 4             // 워드 크기 
+#define DSIZE 8             // 더블 워드 크기
+#define CHUNKSIZE (1<<12)   // 청크 사이즈 2^12 4KB
+
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
+
+// 크기 비트와 할당 비트 더하기(OR) = 헤더, 풋터에 넣을거
+#define PACK(size, alloc) ((size) | (alloc))
+
+// p주소에 있는 워드 읽기, 쓰기
+#define GET(p) ((unsigned int *)p)
+#define PUT(p, val) ((unsigned int *)p = (val))
+
+// 크기, 할당비트 읽기
+#define GET_SIZE(p) (GET(p) & ~0x7) // 11...1000으로 뒤에 비트 빼고 크기비트만
+#define GET_ALLOC(p) (GET(p) & 0x1)
+
+// bp(페이로드의 시작부분)이 주어지면 그 페이로드의 헤더와 풋터 주소
+#define HDRP(bp) ((char *)(bp) - WSIZE)
+#define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
+
+// 다음, 이전 블록 위치
+// 현재 페이로드에서 워드만큼 빼면 현재 블록 헤더, 현재 헤더가 가지고 있는 사이즈만큼 bp에서 더하기 GET_SIZE(((char *)(bp) - WSIZE)) == GET_SIZE(HDRP(bp))
+#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
+// 현재 페이로드에서 더블 워드 만큼 빼면 이전 블록의 풋터, 이전 풋터가 가지고 있는 사이즈만큼 bp에서 빼기 
+#define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
 /*
  * mm_init - initialize the malloc package.
