@@ -49,6 +49,7 @@ team_t team = {
 #define CHUNKSIZE (1<<12)   // 청크 사이즈 2^12 4KB
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
 
 // 크기 비트와 할당 비트 OR로 비어있는 크기 비트의 하위 3비트에 할당 비트 추가 = 헤더, 풋터에 넣을거
 #define PACK(size, alloc) ((size) | (alloc))
@@ -78,6 +79,7 @@ static void *extend_heap(size_t words);
 static void *coalesce(void *ptr);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
+static void *split(void *bp, size_t split_size);
 
 /*
  * mm_init - initialize the malloc package.
@@ -198,6 +200,10 @@ static void place(void *bp, size_t asize) {
     }
 }
 
+static void *split(void *bp, size_t split_size) {
+    return NULL;
+}
+
 // 해당 주소의 헤더, 풋터 할당 비트 0로 설정
 void mm_free(void *ptr)
 {
@@ -251,17 +257,103 @@ static void *coalesce(void *ptr) {
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
-
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
+    // size가 0이면 메모리 해제
+    if (!size) {
+        mm_free(ptr);
         return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
-    if (size < copySize)
-        copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
+    }
+
+    // realloc(NULL, size) == mm_malloc(size);
+    if (!ptr) return mm_malloc(size);
+
+    size_t curr_size = GET_SIZE(HDRP(ptr));
+    size_t asize;
+
+    // 헤더, 풋터를 더하고 해당 값을 8배수로 올림
+    if (size <= DSIZE)
+        asize = 2 * DSIZE;
+    else 
+        asize = DSIZE * ((size + DSIZE + (DSIZE -1)) / DSIZE);
+
+    void *oldptr = ptr;
+    void *newptr = oldptr;
+    
+
+    // 수정된 사이즈랑 현재 사이즈랑 같을 때
+    if (asize == curr_size) {
+        // DO nothing
+    }
+
+    // 수정된 사이즈가 현재 사이즈 보다 작을 때
+    else if(asize < curr_size) {
+        size_t split_size = curr_size - asize;
+        if (split_size < 2 * DSIZE) {
+            asize += split_size;
+        }
+        // 현재 블록 사이즈 감소 (남는 크기가 2 * DSIZE보다 작으면 크기 그대로)
+        PUT(HDRP(newptr), PACK(asize, 1));
+        PUT(FTRP(newptr), PACK(asize, 1));
+
+        // 분할: 뗴어낸 뒷 부분 새 가용 블록으로 바꾸기
+        // 나눴을 때 크기가 2 더블워드보다 크면 블록으로 나누기
+        if (split_size >= 2 * DSIZE) {
+            void *next = NEXT_BLKP(newptr);
+            PUT(HDRP(next), PACK(split_size, 0));
+            PUT(FTRP(next), PACK(split_size, 0));   
+            coalesce(next);
+        }
+    }
+
+    // 수정된 사이즈가 현재 사이즈 보다 클 때
+    else {
+        // 해제되어 있으면서 해당 블록의 사이즈랑 현재 사이즈랑 더한 것이 asize보다 크거나 같은가?
+        if (!GET_ALLOC(HDRP(NEXT_BLKP(newptr))) && asize <= GET_SIZE(HDRP(NEXT_BLKP(newptr))) + curr_size) {
+            // 다음거랑 병합
+            curr_size += GET_SIZE(HDRP(NEXT_BLKP(ptr)));
+            size_t split_size = curr_size - asize;
+            if (split_size < 2 * DSIZE) {
+                asize = curr_size;
+            }
+
+            PUT(HDRP(newptr), PACK(asize, 1));
+            PUT(FTRP(newptr), PACK(asize, 1));
+
+            // 분할: 뗴어낸 뒷 부분 새 가용 블록으로 바꾸기
+            // 나눴을 때 크기가 2 더블워드보다 크면 블록으로 나누기
+            if (split_size >= 2 * DSIZE) {
+                void *next = NEXT_BLKP(newptr);
+                PUT(HDRP(next), PACK(split_size, 0));
+                PUT(FTRP(next), PACK(split_size, 0));   
+            }    
+        }
+
+        // 둘 중에 하나라도 아니면 새로운 포인터로 재할당
+        else {
+            newptr = mm_malloc(size);
+            if (!newptr) return NULL;
+        }
+    }
+
+    // 값 복사
+    // 인자로 받아온 사이즈가 더 작은걸 들고와야 함
+    size = MIN(GET_SIZE(HDRP(ptr)) - DSIZE, size);
+    if (newptr != oldptr) {
+        memcpy(newptr, oldptr, size);
+        mm_free(oldptr);
+    }
+
     return newptr;
+
+
+
+    // 옛날 코드
+    // newptr = mm_malloc(size);
+    // if (newptr == NULL)
+    //     return NULL;
+    // copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    // if (size < copySize)
+    //     copySize = size;
+    // memcpy(newptr, oldptr, copySize);
+    // mm_free(oldptr);
+    // return newptr;    
 }
