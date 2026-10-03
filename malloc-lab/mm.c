@@ -157,6 +157,20 @@ void *mm_malloc(size_t size)
     return bp;
 }
 
+static void *find_fit(size_t asize) {
+    char *curr = heap_listp;
+
+    while(curr - 1 != mem_heap_hi()) {
+        // 가용 블록(할당되지 않았으면)이면서 크기가 인자 asize보다 크거나 같으면 해당 주소 반환
+        if (!GET_ALLOC(HDRP(curr)) && GET_SIZE(HDRP(curr)) >= asize) {
+            return curr;
+        }
+        curr = NEXT_BLKP(curr);
+    }
+    // 찾는데 실패시 NULL 반환
+    return NULL;
+}
+
 // 해당 주소의 헤더, 풋터 할당 비트 0로 설정
 void mm_free(void *ptr)
 {
