@@ -171,6 +171,33 @@ static void *find_fit(size_t asize) {
     return NULL;
 }
 
+static void place(void *bp, size_t asize) {
+    // 할당 실패
+    if (GET_ALLOC(HDRP(bp)) || GET_SIZE(HDRP(bp)) < asize) return;
+
+    // 분할을 위한 사이즈
+    int is_split = 1;
+    char *split_bp = bp;
+    size_t split_size = GET_SIZE(HDRP(bp)) - asize;
+    // 나눴을 때 크기가 2 더블워드보다 작으면 블록으로써 기능X, 그냥 현재 블록에다 모두 할당
+    if (split_size < 2 * DSIZE) {
+        asize += split_size;
+        is_split = 0;
+    }
+
+    // 해당 가용 블록 할당
+    PUT(HDRP(bp), PACK(asize, 1));
+    PUT(FTRP(bp), PACK(asize, 1));
+
+    //분할했으면 실행
+    if (is_split) {
+        // 분할
+        split_bp = NEXT_BLKP(bp);
+        PUT(HDRP(split_bp), PACK(split_size, 0));
+        PUT(FTRP(split_bp), PACK(split_size, 0));
+    }
+}
+
 // 해당 주소의 헤더, 풋터 할당 비트 0로 설정
 void mm_free(void *ptr)
 {
