@@ -76,6 +76,8 @@ static char *heap_listp;
 
 static void *extend_heap(size_t words);
 static void *coalesce(void *ptr);
+static void *find_fit(size_t asize);
+static void place(void *bp, size_t asize);
 
 /*
  * mm_init - initialize the malloc package.
@@ -121,18 +123,41 @@ void *extend_heap(size_t words) {
  */
 void *mm_malloc(size_t size)
 {
-    int newsize = ALIGN(size + SIZE_T_SIZE);
-    void *p = mem_sbrk(newsize);
-    if (p == (void *)-1)
-        return NULL;
-    else
-    {
-        *(size_t *)p = size;
-        return (void *)((char *)p + SIZE_T_SIZE);
+    // 원래 있던 함수
+    // int newsize = ALIGN(size + SIZE_T_SIZE);
+    // void *p = mem_sbrk(newsize);
+    // if (p == (void *)-1)
+    //     return NULL;
+    // else
+    // {
+    //     *(size_t *)p = size;
+    //     return (void *)((char *)p + SIZE_T_SIZE);
+    // }
+
+    size_t asize, extend_size;
+    char *bp;
+
+    if (size == 0) return NULL;
+
+    if (size <= DSIZE)
+        asize = 2 * DSIZE;
+    else 
+        asize = DSIZE * ((size + DSIZE + (DSIZE -1)) / DSIZE);
+
+    if ((bp = find_fit(asize)) != NULL){
+        place(bp, asize);
+        return bp;
     }
+
+    extend_size = MAX(asize, CHUNKSIZE);
+    if ((bp = extend_heap(extend_size/WSIZE)) == NULL) 
+        return NULL;
+    
+    place(bp, asize);
+    return bp;
 }
 
-// 해당 주소의 헤더, 풋터 할당 비트 1로 설정
+// 해당 주소의 헤더, 풋터 할당 비트 0로 설정
 void mm_free(void *ptr)
 {
     if (ptr == NULL) return;
