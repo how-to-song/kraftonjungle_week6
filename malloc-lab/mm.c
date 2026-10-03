@@ -38,10 +38,10 @@ team_t team = {
 #define ALIGNMENT 8
 
 /* rounds up to the nearest multiple of ALIGNMENT */
-/* ~0x7 = 0xFFFFFFFF8 = 111...1000  8의 배수로 반올림*/
+/* ~0x7 = 0xFFFFFFF8 = 111...1000  8의 배수로 올림*/
 #define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0x7)
 
-// size_t의 크기를 8의 배수로 반올림한 크기 SIZE_T_SIZE
+// size_t의 크기를 8의 배수로 올림한 크기 SIZE_T_SIZE
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
 #define WSIZE 4             // 워드 크기 
@@ -50,7 +50,7 @@ team_t team = {
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
-// 크기 비트와 할당 비트 더하기(OR) = 헤더, 풋터에 넣을거
+// 크기 비트와 할당 비트 OR로 비어있는 크기 비트의 하위 3비트에 할당 비트 추가 = 헤더, 풋터에 넣을거
 #define PACK(size, alloc) ((size) | (alloc))
 
 // p주소에 있는 워드 읽기, 쓰기
@@ -75,6 +75,7 @@ team_t team = {
 static char *heap_listp;
 
 static void *extend_heap(size_t words);
+static void *coalesce(void *ptr);
 
 /*
  * mm_init - initialize the malloc package.
@@ -110,9 +111,8 @@ void *extend_heap(size_t words) {
     PUT(FTRP(bp), PACK(size, 0));
     PUT(HDRP(NEXT_BLKP(bp)), 1);
 
-    // TODO: 병합
-
-    return bp;
+    // 병합
+    return coalesce(bp);
 }
 
 /*
@@ -132,9 +132,7 @@ void *mm_malloc(size_t size)
     }
 }
 
-/*
- * mm_free - Freeing a block does nothing.
- */
+// 해당 주소의 헤더, 풋터 할당 비트 1로 설정
 void mm_free(void *ptr)
 {
     if (ptr == NULL) return;
@@ -143,7 +141,43 @@ void mm_free(void *ptr)
     PUT(HDRP(ptr), PACK(size, 0));
     PUT(FTRP(ptr), PACK(size, 0));
 
-    // TODO: 병합
+    // 병합
+    coalesce(ptr);
+}
+
+static void *coalesce(void *ptr) {
+    int prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(ptr)));
+    int next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(ptr)));
+    size_t size = GET_SIZE(HDRP(ptr));
+
+    // 이전 블록, 다음 블록 다 할당되어 있을 때
+    if (prev_alloc && next_alloc) {
+        return ptr;
+    }
+    // 이전 블록은 할당, 다음 블록은 가용
+    else if (prev_alloc && !next_alloc) {
+        size += GET_SIZE(HDRP(NEXT_BLKP(ptr)));
+        PUT(HDRP(ptr), PACK(size, 0));
+        PUT(FTRP(ptr), PACK(size, 0));
+    }
+    // 이전 블록은 가용, 다음 블록 할당
+    else if (!prev_alloc && next_alloc) {
+        size += GET_SIZE(HDRP(PREV_BLKP(ptr)));
+        PUT(HDRP(PREV_BLKP(ptr)), PACK(size, 0));
+        PUT(FTRP(ptr), PACK(size, 0));
+        ptr = PREV_BLKP(ptr);
+    }
+    // 이전 블록, 다음 블록 둘 다 가용
+    else if (!prev_alloc && !next_alloc){
+        size += GET_SIZE(HDRP(NEXT_BLKP(ptr)))
+                + GET_SIZE(HDRP(PREV_BLKP(ptr)));
+
+        PUT(HDRP(PREV_BLKP(ptr)), PACK(size, 0));
+        PUT(FTRP(NEXT_BLKP(ptr)), PACK(size, 0));
+        ptr = PREV_BLKP(ptr);
+    }
+
+    return ptr;
 }
 
 /*
