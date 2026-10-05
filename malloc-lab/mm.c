@@ -47,7 +47,7 @@ team_t team = {
 #define WSIZE 4             // 워드 크기 
 #define DSIZE 8             // 더블 워드 크기
 #define CHUNKSIZE (1<<12)   // 청크 사이즈 2^12 4KB
-#define MIN_BLK_SIZE (2 * DSIZE) // 최소 블록 사이즈
+#define MIN_BLK_SIZE (3 * DSIZE) // 최소 블록 사이즈 why? 헤더+풋터 DSIZE(8바이트), pred포인터(8바이트), succ포인터(8바이트)
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -73,8 +73,12 @@ team_t team = {
 // 현재 페이로드에서 더블 워드 만큼 빼면 이전 블록의 풋터, 이전 풋터가 가지고 있는 사이즈만큼 bp에서 빼기 
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
+// pred, succ 포인터 읽기
+#define PRED()
+
 
 static char *heap_listp;
+static char *broken_heap_ptr;
 
 static size_t cal_asize(size_t size);
 static void *extend_heap(size_t words);
@@ -82,6 +86,50 @@ static void *coalesce(void *ptr);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
 static void *split(void *bp, size_t asize);
+
+
+// #define DEBUG   // 디버깅할 때만 이 줄의 주석을 푼다
+#ifdef DEBUG
+// bp 불변식 검사 1: 정상 / -1: 블록이 힙 범위 밖, -2: 블록 크기 이상, -3: 헤더, 풋터 다름
+//                        -4: 인접한 가용 블록, -5: 8배수 정렬 이상
+static int mm_checkheap(void) {
+    char *curr = NEXT_BLKP(heap_listp);
+    // 프롤로그 다음 블록 부터 에필로그
+    while (curr - 1 != mem_heap_hi()){
+        broken_heap_ptr = curr;
+        // 블록이 힙 범위 안에 있는지
+        if ((long)curr < (long)mem_heap_lo() || (long)curr > (long)mem_heap_hi()) return -1;
+        // 블록의 크기가 정확
+        if (GET_SIZE(HDRP(curr)) < MIN_BLK_SIZE || (long)FTRP(curr) > (long)((char *)mem_heap_hi() - (DSIZE - 1)))return -2;
+        // 헤더, 풋터 동일
+        if (GET(HDRP(curr)) != GET(FTRP(curr))) return -3;
+        // 인접한 가용 블록
+        if (!GET_ALLOC(HDRP(curr)) && (!GET_ALLOC(HDRP(NEXT_BLKP(curr))))) return -4;
+        // 8배수 정렬
+        if ((long)curr % 8 != 0) return -5;
+        
+        curr = NEXT_BLKP(curr);
+    }
+
+    // 정상
+    broken_heap_ptr = NULL;
+    return 1;
+}
+
+#define CHECKHEAP() do {                                                   \
+        int r = mm_checkheap();                                            \
+        if (r != 1) {                                                      \
+            fprintf(stderr, "[checkheap] %s:%d code=%d bp=%p\n",           \
+                    __func__, __LINE__, r, (void *)broken_heap_ptr);       \
+            if (r != -1)                                                   \
+                fprintf(stderr, "  header=0x%x\n", GET(HDRP(broken_heap_ptr))); \
+            assert(0);                                                     \
+        }                                                                  \
+    } while (0)
+#else
+#define CHECKHEAP()
+#endif
+
 
 // 요청한 크기에 맞는 블록 크기 계산
 static size_t cal_asize(size_t size) {
@@ -224,6 +272,7 @@ void mm_free(void *ptr)
 
     // 병합
     coalesce(ptr);
+    CHECKHEAP();
 }
 
 static void *coalesce(void *ptr) {
