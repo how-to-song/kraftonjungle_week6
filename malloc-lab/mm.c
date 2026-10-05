@@ -47,6 +47,7 @@ team_t team = {
 #define WSIZE 4             // 워드 크기 
 #define DSIZE 8             // 더블 워드 크기
 #define CHUNKSIZE (1<<12)   // 청크 사이즈 2^12 4KB
+#define MIN_BLK_SIZE (2 * DSIZE) // 최소 블록 사이즈
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -62,7 +63,7 @@ team_t team = {
 #define GET_SIZE(p) (GET(p) & ~0x7) // 11...1000으로 뒤에 비트 빼고 크기비트만
 #define GET_ALLOC(p) (GET(p) & 0x1)
 
-// bp(페이로드의 시작부분)이 주어지면 그 페이로드의 헤더와 풋터 주소
+// bp(페이로드의 시작부분)이 주어지면 그 블록의 헤더와 풋터 주소
 #define HDRP(bp) ((char *)(bp) - WSIZE)
 #define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
 
@@ -75,11 +76,24 @@ team_t team = {
 
 static char *heap_listp;
 
+static size_t cal_asize(size_t size);
 static void *extend_heap(size_t words);
 static void *coalesce(void *ptr);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
-static void *split(void *bp, size_t split_size);
+static void *split(void *bp, size_t asize);
+
+// 요청한 크기에 맞는 블록 크기 계산
+static size_t cal_asize(size_t size) {
+    size_t asize;
+
+    if (size <= MIN_BLK_SIZE - DSIZE)
+        asize = MIN_BLK_SIZE;
+    else 
+        asize = DSIZE * ((size + DSIZE + (DSIZE -1)) / DSIZE);
+
+    return asize;
+}
 
 /*
  * mm_init - initialize the malloc package.
@@ -102,7 +116,7 @@ int mm_init(void)
     return 0;
 }
 
-void *extend_heap(size_t words) {
+static void *extend_heap(size_t words) {
     char *bp;
     size_t size;
 
@@ -119,10 +133,6 @@ void *extend_heap(size_t words) {
     return coalesce(bp);
 }
 
-/*
- * mm_malloc - Allocate a block by incrementing the brk pointer.
- *     Always allocate a block whose size is a multiple of the alignment.
- */
 void *mm_malloc(size_t size)
 {
     // 원래 있던 함수
@@ -141,10 +151,7 @@ void *mm_malloc(size_t size)
 
     if (size == 0) return NULL;
 
-    if (size <= DSIZE)
-        asize = 2 * DSIZE;
-    else 
-        asize = DSIZE * ((size + DSIZE + (DSIZE -1)) / DSIZE);
+    asize = cal_asize(size);
 
     if ((bp = find_fit(asize)) != NULL){
         place(bp, asize);
@@ -174,20 +181,23 @@ static void *find_fit(size_t asize) {
 }
 
 static void place(void *bp, size_t asize) {
-    // 할당 실패
+    // 현재 블록이 할당되어 있거나 크기가 asize보다 작으면 아무것도 안함
     if (GET_ALLOC(HDRP(bp)) || GET_SIZE(HDRP(bp)) < asize) return;
 
-    // 분할을 위한 사이즈
+    // 분할
+    split(bp, asize);
+}
+
+static void *split(void *bp, size_t asize) {
     int is_split = 1;
     char *split_bp = bp;
     size_t split_size = GET_SIZE(HDRP(bp)) - asize;
-    // 나눴을 때 크기가 2 더블워드보다 작으면 블록으로써 기능X, 그냥 현재 블록에다 모두 할당
-    if (split_size < 2 * DSIZE) {
+    // 나눴을 때 크기가 최소 블록 사이즈보다 작으면 블록으로써 기능X, 그냥 현재 블록에다 모두 할당
+    if (split_size < MIN_BLK_SIZE) {
         asize += split_size;
         is_split = 0;
     }
 
-    // 해당 가용 블록 할당
     PUT(HDRP(bp), PACK(asize, 1));
     PUT(FTRP(bp), PACK(asize, 1));
 
@@ -197,11 +207,10 @@ static void place(void *bp, size_t asize) {
         split_bp = NEXT_BLKP(bp);
         PUT(HDRP(split_bp), PACK(split_size, 0));
         PUT(FTRP(split_bp), PACK(split_size, 0));
+        coalesce(split_bp);
     }
-}
 
-static void *split(void *bp, size_t split_size) {
-    return NULL;
+    return bp;
 }
 
 // 해당 주소의 헤더, 풋터 할당 비트 0로 설정
@@ -252,9 +261,7 @@ static void *coalesce(void *ptr) {
     return ptr;
 }
 
-/*
- * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
- */
+// 제자리 최적화 구현
 void *mm_realloc(void *ptr, size_t size)
 {
     // size가 0이면 메모리 해제
@@ -267,13 +274,7 @@ void *mm_realloc(void *ptr, size_t size)
     if (!ptr) return mm_malloc(size);
 
     size_t curr_size = GET_SIZE(HDRP(ptr));
-    size_t asize;
-
-    // 헤더, 풋터를 더하고 해당 값을 8배수로 올림
-    if (size <= DSIZE)
-        asize = 2 * DSIZE;
-    else 
-        asize = DSIZE * ((size + DSIZE + (DSIZE -1)) / DSIZE);
+    size_t asize = cal_asize(size);
 
     void *oldptr = ptr;
     void *newptr = oldptr;
@@ -281,50 +282,24 @@ void *mm_realloc(void *ptr, size_t size)
 
     // 수정된 사이즈랑 현재 사이즈랑 같을 때
     if (asize == curr_size) {
-        // DO nothing
+        return newptr;
     }
 
     // 수정된 사이즈가 현재 사이즈 보다 작을 때
     else if(asize < curr_size) {
-        size_t split_size = curr_size - asize;
-        if (split_size < 2 * DSIZE) {
-            asize += split_size;
-        }
-        // 현재 블록 사이즈 감소 (남는 크기가 2 * DSIZE보다 작으면 크기 그대로)
-        PUT(HDRP(newptr), PACK(asize, 1));
-        PUT(FTRP(newptr), PACK(asize, 1));
-
-        // 분할: 뗴어낸 뒷 부분 새 가용 블록으로 바꾸기
-        // 나눴을 때 크기가 2 더블워드보다 크면 블록으로 나누기
-        if (split_size >= 2 * DSIZE) {
-            void *next = NEXT_BLKP(newptr);
-            PUT(HDRP(next), PACK(split_size, 0));
-            PUT(FTRP(next), PACK(split_size, 0));   
-            coalesce(next);
-        }
+        split(newptr, asize);
     }
 
     // 수정된 사이즈가 현재 사이즈 보다 클 때
     else {
         // 해제되어 있으면서 해당 블록의 사이즈랑 현재 사이즈랑 더한 것이 asize보다 크거나 같은가?
-        if (!GET_ALLOC(HDRP(NEXT_BLKP(newptr))) && asize <= GET_SIZE(HDRP(NEXT_BLKP(newptr))) + curr_size) {
+        if (!GET_ALLOC(HDRP(NEXT_BLKP(newptr))) && asize <= GET_SIZE(HDRP(NEXT_BLKP(newptr))) + curr_size) {    
             // 다음거랑 병합
-            curr_size += GET_SIZE(HDRP(NEXT_BLKP(ptr)));
-            size_t split_size = curr_size - asize;
-            if (split_size < 2 * DSIZE) {
-                asize = curr_size;
-            }
+            curr_size += GET_SIZE(HDRP(NEXT_BLKP(newptr)));
+            PUT(HDRP(newptr), PACK(curr_size, 1));
+            PUT(FTRP(newptr), PACK(curr_size, 1));
 
-            PUT(HDRP(newptr), PACK(asize, 1));
-            PUT(FTRP(newptr), PACK(asize, 1));
-
-            // 분할: 뗴어낸 뒷 부분 새 가용 블록으로 바꾸기
-            // 나눴을 때 크기가 2 더블워드보다 크면 블록으로 나누기
-            if (split_size >= 2 * DSIZE) {
-                void *next = NEXT_BLKP(newptr);
-                PUT(HDRP(next), PACK(split_size, 0));
-                PUT(FTRP(next), PACK(split_size, 0));   
-            }    
+            split(newptr, asize);
         }
 
         // 둘 중에 하나라도 아니면 새로운 포인터로 재할당
