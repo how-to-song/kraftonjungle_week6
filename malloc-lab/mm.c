@@ -81,14 +81,19 @@ team_t team = {
 #define GET_P(ptr) (*(ptr))
 #define PUT_P(ptr, val) ((*(ptr)) = (val))
 
+// 힙을 주소순으로 읽을 때 포인터
 static char *heap_listp;
+// 힙의 가용 블록을 읽을 때 포인터
+static char *heap_free_listp;
 
 static size_t cal_asize(size_t size);
 static void *extend_heap(size_t words);
-static void *coalesce(void *ptr);
+static void *coalesce(void *bp);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
 static void *split(void *bp, size_t asize);
+static void insert_fblk(void *bp);
+static void remove_fblk(void *bp);
 
 
 // #define DEBUG   // 디버깅할 때만 이 줄의 주석을 푼다
@@ -147,6 +152,40 @@ static size_t cal_asize(size_t size) {
     return asize;
 }
 
+static void insert_fblk(void *bp) {
+    // 가용 리스트 포인터가 NULL이면 첫 가용 블록
+    if (heap_free_listp == NULL) {
+        PUT_P(PRED(bp), NULL);
+        PUT_P(SUCC(bp), NULL);
+    }
+    else {
+        PUT_P(PRED(heap_free_listp), bp);
+        PUT_P(SUCC(bp), heap_free_listp);
+        PUT_P(PRED(bp), NULL);
+    }
+
+    heap_free_listp = bp;
+}
+
+static void remove_fblk(void *bp) {
+    if (!GET_P(PRED(bp)) && !GET_P(SUCC(bp))) {
+        heap_free_listp = NULL;
+    }
+    // 시작
+    else if(!GET_P(PRED(bp)) && GET_P(SUCC(bp))) {
+        heap_free_listp = GET_P(SUCC(bp));
+        PUT_P(PRED(GET_P(SUCC(bp))), NULL);
+    }
+    // 마지막
+    else if (GET_P(PRED(bp)) && !GET_P(SUCC(bp))) {
+        PUT_P(SUCC(GET_P(PRED(bp))), NULL);
+    }
+    else {
+        PUT_P(SUCC(GET_P(PRED(bp))), GET_P(SUCC(bp)));
+        PUT_P(PRED(GET_P(SUCC(bp))), GET_P(PRED(bp)));
+    }
+}
+
 /*
  * mm_init - initialize the malloc package.
  */
@@ -155,6 +194,7 @@ int mm_init(void)
     // 초기화를 위한 brk포인터 4워드만큼 증가
     if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1) 
         return -1;
+    heap_free_listp = NULL;
 
     PUT(heap_listp, 0);                                 // 패딩
     PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));      // 프롤로그의 헤더
@@ -266,111 +306,111 @@ static void *split(void *bp, size_t asize) {
 }
 
 // 해당 주소의 헤더, 풋터 할당 비트 0로 설정
-void mm_free(void *ptr)
+void mm_free(void *bp)
 {
-    if (ptr == NULL) return;
+    if (bp == NULL) return;
 
-    size_t size = GET_SIZE(HDRP(ptr));
-    PUT(HDRP(ptr), PACK(size, 0));
-    PUT(FTRP(ptr), PACK(size, 0));
+    size_t size = GET_SIZE(HDRP(bp));
+    PUT(HDRP(bp), PACK(size, 0));
+    PUT(FTRP(bp), PACK(size, 0));
 
     // 병합
-    coalesce(ptr);
+    coalesce(bp);
     CHECKHEAP();
 }
 
-static void *coalesce(void *ptr) {
-    int prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(ptr)));
-    int next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(ptr)));
-    size_t size = GET_SIZE(HDRP(ptr));
+static void *coalesce(void *bp) {
+    int prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(bp)));
+    int next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+    size_t size = GET_SIZE(HDRP(bp));
 
     // 이전 블록, 다음 블록 다 할당되어 있을 때
     if (prev_alloc && next_alloc) {
-        return ptr;
+        return bp;
     }
     // 이전 블록은 할당, 다음 블록은 가용
     else if (prev_alloc && !next_alloc) {
-        size += GET_SIZE(HDRP(NEXT_BLKP(ptr)));
-        PUT(HDRP(ptr), PACK(size, 0));
-        PUT(FTRP(ptr), PACK(size, 0));
+        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        PUT(HDRP(bp), PACK(size, 0));
+        PUT(FTRP(bp), PACK(size, 0));
     }
     // 이전 블록은 가용, 다음 블록 할당
     else if (!prev_alloc && next_alloc) {
-        size += GET_SIZE(HDRP(PREV_BLKP(ptr)));
-        PUT(HDRP(PREV_BLKP(ptr)), PACK(size, 0));
-        PUT(FTRP(ptr), PACK(size, 0));
-        ptr = PREV_BLKP(ptr);
+        size += GET_SIZE(HDRP(PREV_BLKP(bp)));
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+        PUT(FTRP(bp), PACK(size, 0));
+        bp = PREV_BLKP(bp);
     }
     // 이전 블록, 다음 블록 둘 다 가용
     else if (!prev_alloc && !next_alloc){
-        size += GET_SIZE(HDRP(NEXT_BLKP(ptr)))
-                + GET_SIZE(HDRP(PREV_BLKP(ptr)));
+        size += GET_SIZE(HDRP(NEXT_BLKP(bp)))
+                + GET_SIZE(HDRP(PREV_BLKP(bp)));
 
-        PUT(HDRP(PREV_BLKP(ptr)), PACK(size, 0));
-        PUT(FTRP(NEXT_BLKP(ptr)), PACK(size, 0));
-        ptr = PREV_BLKP(ptr);
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+        PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
+        bp = PREV_BLKP(bp);
     }
 
-    return ptr;
+    return bp;
 }
 
 // 제자리 최적화 구현
-void *mm_realloc(void *ptr, size_t size)
+void *mm_realloc(void *bp, size_t size)
 {
     // size가 0이면 메모리 해제
     if (!size) {
-        mm_free(ptr);
+        mm_free(bp);
         return NULL;
     }
 
     // realloc(NULL, size) == mm_malloc(size);
-    if (!ptr) return mm_malloc(size);
+    if (!bp) return mm_malloc(size);
 
-    size_t curr_size = GET_SIZE(HDRP(ptr));
+    size_t curr_size = GET_SIZE(HDRP(bp));
     size_t asize = cal_asize(size);
 
-    void *oldptr = ptr;
-    void *newptr = oldptr;
+    void *oldbp = bp;
+    void *newbp = oldbp;
     
 
     // 수정된 사이즈랑 현재 사이즈랑 같을 때
     if (asize == curr_size) {
-        return newptr;
+        return newbp;
     }
 
     // 수정된 사이즈가 현재 사이즈 보다 작을 때
     else if(asize < curr_size) {
-        split(newptr, asize);
+        split(newbp, asize);
     }
 
     // 수정된 사이즈가 현재 사이즈 보다 클 때
     else {
         // 해제되어 있으면서 해당 블록의 사이즈랑 현재 사이즈랑 더한 것이 asize보다 크거나 같은가?
-        if (!GET_ALLOC(HDRP(NEXT_BLKP(newptr))) && asize <= GET_SIZE(HDRP(NEXT_BLKP(newptr))) + curr_size) {    
+        if (!GET_ALLOC(HDRP(NEXT_BLKP(newbp))) && asize <= GET_SIZE(HDRP(NEXT_BLKP(newbp))) + curr_size) {    
             // 다음거랑 병합
-            curr_size += GET_SIZE(HDRP(NEXT_BLKP(newptr)));
-            PUT(HDRP(newptr), PACK(curr_size, 1));
-            PUT(FTRP(newptr), PACK(curr_size, 1));
+            curr_size += GET_SIZE(HDRP(NEXT_BLKP(newbp)));
+            PUT(HDRP(newbp), PACK(curr_size, 1));
+            PUT(FTRP(newbp), PACK(curr_size, 1));
 
-            split(newptr, asize);
+            split(newbp, asize);
         }
 
         // 둘 중에 하나라도 아니면 새로운 포인터로 재할당
         else {
-            newptr = mm_malloc(size);
-            if (!newptr) return NULL;
+            newbp = mm_malloc(size);
+            if (!newbp) return NULL;
         }
     }
 
     // 값 복사
     // 인자로 받아온 사이즈가 더 작은걸 들고와야 함
-    size = MIN(GET_SIZE(HDRP(ptr)) - DSIZE, size);
-    if (newptr != oldptr) {
-        memcpy(newptr, oldptr, size);
-        mm_free(oldptr);
+    size = MIN(GET_SIZE(HDRP(bp)) - DSIZE, size);
+    if (newbp != oldbp) {
+        memcpy(newbp, oldbp, size);
+        mm_free(oldbp);
     }
 
-    return newptr;
+    return newbp;
 
 
 
