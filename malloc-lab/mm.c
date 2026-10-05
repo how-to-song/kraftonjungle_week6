@@ -259,23 +259,24 @@ void *mm_malloc(size_t size)
 }
 
 static void *find_fit(size_t asize) {
-    char *curr = heap_listp;
+    char *curr = heap_free_listp;
 
-    while(curr - 1 != mem_heap_hi()) {
-        // 가용 블록(할당되지 않았으면)이면서 크기가 인자 asize보다 크거나 같으면 해당 주소 반환
-        if (!GET_ALLOC(HDRP(curr)) && GET_SIZE(HDRP(curr)) >= asize) {
-            return curr;
+    while(curr != NULL) {
+        // 크기가 인자 asize보다 크거나 같으면 해당 주소 반환
+        if (GET_SIZE(HDRP(curr)) >= asize) {
+            break;
         }
-        curr = NEXT_BLKP(curr);
+        curr = GET_P(SUCC(curr));
     }
     // 찾는데 실패시 NULL 반환
-    return NULL;
+    return curr;
 }
 
 static void place(void *bp, size_t asize) {
     // 현재 블록이 할당되어 있거나 크기가 asize보다 작으면 아무것도 안함
     if (GET_ALLOC(HDRP(bp)) || GET_SIZE(HDRP(bp)) < asize) return;
 
+    remove_fblk(bp);
     // 분할
     split(bp, asize);
 }
@@ -326,17 +327,19 @@ static void *coalesce(void *bp) {
 
     // 이전 블록, 다음 블록 다 할당되어 있을 때
     if (prev_alloc && next_alloc) {
-        return bp;
+        //Do Nothing
     }
     // 이전 블록은 할당, 다음 블록은 가용
     else if (prev_alloc && !next_alloc) {
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        remove_fblk(NEXT_BLKP(bp));
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
     }
     // 이전 블록은 가용, 다음 블록 할당
     else if (!prev_alloc && next_alloc) {
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
+        remove_fblk(PREV_BLKP(bp));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
         bp = PREV_BLKP(bp);
@@ -346,11 +349,14 @@ static void *coalesce(void *bp) {
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)))
                 + GET_SIZE(HDRP(PREV_BLKP(bp)));
 
+        remove_fblk(PREV_BLKP(bp));
+        remove_fblk(NEXT_BLKP(bp));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
 
+    insert_fblk(bp);
     return bp;
 }
 
@@ -389,6 +395,7 @@ void *mm_realloc(void *bp, size_t size)
         if (!GET_ALLOC(HDRP(NEXT_BLKP(newbp))) && asize <= GET_SIZE(HDRP(NEXT_BLKP(newbp))) + curr_size) {    
             // 다음거랑 병합
             curr_size += GET_SIZE(HDRP(NEXT_BLKP(newbp)));
+            remove_fblk(NEXT_BLKP(newbp));
             PUT(HDRP(newbp), PACK(curr_size, 1));
             PUT(FTRP(newbp), PACK(curr_size, 1));
 
