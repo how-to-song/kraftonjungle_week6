@@ -106,7 +106,7 @@ static size_t cal_asize(size_t size);
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
 static void *find_fit(size_t asize);
-static void place(void *bp, size_t asize);
+static void *place(void *bp, size_t asize);
 static void *split(void *bp, size_t asize);
 static void insert_fblk(void *bp);
 static void remove_fblk(void *bp);
@@ -304,7 +304,7 @@ void *mm_malloc(size_t size)
     asize = cal_asize(size);
 
     if ((bp = find_fit(asize)) != NULL){
-        place(bp, asize);
+        bp = place(bp, asize);
         CHECKHEAP();
         return bp;
     }
@@ -313,7 +313,7 @@ void *mm_malloc(size_t size)
     if ((bp = extend_heap(extend_size/WSIZE)) == NULL) 
         return NULL;
     
-    place(bp, asize);
+    bp = place(bp, asize);
     CHECKHEAP();
     return bp;
 }
@@ -350,18 +350,38 @@ static void *find_fit(size_t asize) {
     return NULL;
 }
 
-static void place(void *bp, size_t asize) {
+static void *place(void *bp, size_t asize) {
     // 현재 블록이 할당되어 있거나 크기가 asize보다 작으면 아무것도 안함
-    if (GET_ALLOC(HDRP(bp)) || GET_SIZE(HDRP(bp)) < asize) return;
+    if (GET_ALLOC(HDRP(bp)) || GET_SIZE(HDRP(bp)) < asize) return NULL;
 
     remove_fblk(bp);
     // 분할
-    split(bp, asize);
+    char *split_bp;
+    size_t split_size = GET_SIZE(HDRP(bp)) - asize;
+
+    if ((GET_SIZE(HDRP(bp)) / 2) > asize) {
+        PUT(HDRP(bp), PACK(split_size, 0));
+        PUT(FTRP(bp), PACK(split_size, 0));
+
+        split_bp = NEXT_BLKP(bp);
+        PUT(HDRP(split_bp), PACK(asize, 1));
+        PUT(FTRP(split_bp), PACK(asize, 1));
+
+        void *temp = split_bp;
+        split_bp = bp;
+        bp = temp;
+
+        coalesce(split_bp);
+    } else {
+        split(bp, asize);
+    }
+
+    return bp;
 }
 
 static void *split(void *bp, size_t asize) {
     int is_split = 1;
-    char *split_bp = bp;
+    char *split_bp;
     size_t split_size = GET_SIZE(HDRP(bp)) - asize;
     // 나눴을 때 크기가 최소 블록 사이즈보다 작으면 블록으로써 기능X, 그냥 현재 블록에다 모두 할당
     if (split_size < MIN_BLK_SIZE) {
@@ -372,10 +392,10 @@ static void *split(void *bp, size_t asize) {
     PUT(HDRP(bp), PACK(asize, 1));
     PUT(FTRP(bp), PACK(asize, 1));
 
-    //분할했으면 실행
+
     if (is_split) {
-        // 분할
         split_bp = NEXT_BLKP(bp);
+
         PUT(HDRP(split_bp), PACK(split_size, 0));
         PUT(FTRP(split_bp), PACK(split_size, 0));
         coalesce(split_bp);
@@ -482,8 +502,24 @@ void *mm_realloc(void *bp, size_t size)
 
         // 둘 중에 하나라도 아니면 새로운 포인터로 재할당
         else {
-            newbp = mm_malloc(size);
-            if (!newbp) return NULL;
+            // 다음 블록이 에필로그일 때
+            if (GET_SIZE(HDRP(NEXT_BLKP(newbp))) == 0) {
+                // 다음 블록이 없어서 힙을 더 늘리고
+                void* extend = extend_heap((cal_asize(asize - curr_size)) / WSIZE);
+                if (!extend) return NULL;
+                remove_fblk(extend);
+
+                // 다음 블록과 병합
+                curr_size += GET_SIZE(HDRP(NEXT_BLKP(newbp)));
+                PUT(HDRP(newbp), PACK(curr_size, 1));
+                PUT(FTRP(newbp), PACK(curr_size, 1));
+
+               split(newbp, asize);
+            }
+            else {
+                newbp = mm_malloc(size);
+                if (!newbp) return NULL;
+            }
         }
     }
 
