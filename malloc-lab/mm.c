@@ -49,6 +49,7 @@ team_t team = {
 #define PSIZE 8             // 포인터 사이즈
 #define CHUNKSIZE (1<<12)   // 청크 사이즈 2^12 4KB
 #define MIN_BLK_SIZE (3 * DSIZE) // 최소 블록 사이즈 why? 헤더+풋터 DSIZE(8바이트), pred포인터(8바이트), succ포인터(8바이트)
+#define LISTLIMIT 20        // 분리 가용 리스트 최대 개수
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -85,6 +86,21 @@ team_t team = {
 static char *heap_listp;
 // 힙의 가용 블록을 읽을 때 포인터
 static char *heap_free_listp;
+// 크기 클래스별 분리 가용 리스트
+static void *segregated_free_list[LISTLIMIT];
+
+// 크기별 분리 가용리스트 인덱스 구하기
+static int get_idx_sc(size_t size) {
+    size = (size - MIN_BLK_SIZE) / DSIZE;
+    int list_idx = 0;
+
+    while ((list_idx < LISTLIMIT - 1) && (size > 1)) {
+        size >>= 1;
+        list_idx++;
+    }
+    
+    return list_idx;
+}
 
 static size_t cal_asize(size_t size);
 static void *extend_heap(size_t words);
@@ -153,33 +169,51 @@ static size_t cal_asize(size_t size) {
 }
 
 static void insert_fblk(void *bp) {
+    // 단일 가용 리스트
     // 가용 리스트 포인터가 NULL이면 첫 가용 블록
-    if (heap_free_listp == NULL) {
+    // if (heap_free_listp == NULL) {
+    //     PUT_P(PRED(bp), NULL);
+    //     PUT_P(SUCC(bp), NULL);
+    // }
+    // else {
+    //     PUT_P(PRED(heap_free_listp), bp);
+    //     PUT_P(SUCC(bp), heap_free_listp);
+    //     PUT_P(PRED(bp), NULL);
+    // }
+
+    // heap_free_listp = bp;
+
+
+    int list_idx = get_idx_sc(GET_SIZE(HDRP(bp)));
+    if (!segregated_free_list[list_idx]) {
         PUT_P(PRED(bp), NULL);
         PUT_P(SUCC(bp), NULL);
     }
     else {
-        PUT_P(PRED(heap_free_listp), bp);
-        PUT_P(SUCC(bp), heap_free_listp);
+        PUT_P(PRED(segregated_free_list[list_idx]), bp);
+        PUT_P(SUCC(bp), segregated_free_list[list_idx]);
         PUT_P(PRED(bp), NULL);
     }
 
-    heap_free_listp = bp;
+    segregated_free_list[list_idx] = bp;
 }
 
 static void remove_fblk(void *bp) {
+    int list_idx = get_idx_sc(GET_SIZE(HDRP(bp)));
+
     if (!GET_P(PRED(bp)) && !GET_P(SUCC(bp))) {
-        heap_free_listp = NULL;
+        segregated_free_list[list_idx] = NULL;
     }
     // 시작
     else if(!GET_P(PRED(bp)) && GET_P(SUCC(bp))) {
-        heap_free_listp = GET_P(SUCC(bp));
+        segregated_free_list[list_idx] = GET_P(SUCC(bp));
         PUT_P(PRED(GET_P(SUCC(bp))), NULL);
     }
     // 마지막
     else if (GET_P(PRED(bp)) && !GET_P(SUCC(bp))) {
         PUT_P(SUCC(GET_P(PRED(bp))), NULL);
     }
+    // 중간
     else {
         PUT_P(SUCC(GET_P(PRED(bp))), GET_P(SUCC(bp)));
         PUT_P(PRED(GET_P(SUCC(bp))), GET_P(PRED(bp)));
@@ -194,7 +228,14 @@ int mm_init(void)
     // 초기화를 위한 brk포인터 4워드만큼 증가
     if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1) 
         return -1;
-    heap_free_listp = NULL;
+
+    // 단일 연결 리스트
+    //heap_free_listp = NULL;
+
+    // 분리 가용 리스트
+    for (int i = 0; i < LISTLIMIT; i++) {
+        segregated_free_list[i] = NULL;
+    }
 
     PUT(heap_listp, 0);                                 // 패딩
     PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));      // 프롤로그의 헤더
@@ -259,17 +300,35 @@ void *mm_malloc(size_t size)
 }
 
 static void *find_fit(size_t asize) {
-    char *curr = heap_free_listp;
+    // 단일 연결 리스트
+    // char *curr = heap_free_listp;
 
-    while(curr != NULL) {
-        // 크기가 인자 asize보다 크거나 같으면 해당 주소 반환
-        if (GET_SIZE(HDRP(curr)) >= asize) {
-            break;
+    // while(curr != NULL) {
+    //     // 크기가 인자 asize보다 크거나 같으면 해당 주소 반환
+    //     if (GET_SIZE(HDRP(curr)) >= asize) {
+    //         break;
+    //     }
+    //     curr = GET_P(SUCC(curr));
+    // }
+    // // 찾는데 실패시 NULL 반환
+    // return curr;
+
+    // 분리 가용 리스트
+    void *bp = NULL;
+    int list_idx = get_idx_sc(asize);
+
+    while(list_idx < LISTLIMIT) {
+        if (segregated_free_list[list_idx] != NULL) {
+            bp = segregated_free_list[list_idx];
+            while (bp != NULL && GET_SIZE(HDRP(bp)) < asize) {
+                bp = GET_P(SUCC(bp));
+            }
+            if (bp != NULL) return bp;
         }
-        curr = GET_P(SUCC(curr));
+        list_idx++;
     }
-    // 찾는데 실패시 NULL 반환
-    return curr;
+
+    return NULL;
 }
 
 static void place(void *bp, size_t asize) {
