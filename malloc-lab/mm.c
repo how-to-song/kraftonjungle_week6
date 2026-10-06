@@ -85,7 +85,7 @@ team_t team = {
 // 힙을 주소순으로 읽을 때 포인터
 static char *heap_listp;
 // 힙의 가용 블록을 읽을 때 포인터
-static char *heap_free_listp;
+// static char *heap_free_listp;
 // 크기 클래스별 분리 가용 리스트
 static void *segregated_free_list[LISTLIMIT];
 
@@ -116,9 +116,11 @@ static void remove_fblk(void *bp);
 #ifdef DEBUG
 static char *broken_heap_ptr;
 // bp 불변식 검사 1: 정상 / -1: 블록이 힙 범위 밖, -2: 블록 크기 이상, -3: 헤더, 풋터 다름
-//                        -4: 인접한 가용 블록, -5: 8배수 정렬 이상
+//                        -4: 인접한 가용 블록, -5: 8배수 정렬 이상, -6: 블록이 맞지 않은 클래스에 있음, -7: 가용 블록 수 다름
 static int mm_checkheap(void) {
     char *curr = NEXT_BLKP(heap_listp);
+    int free_count_h = 0;
+    int free_count_s = 0;
     // 프롤로그 다음 블록 부터 에필로그
     while (curr - 1 != mem_heap_hi()){
         broken_heap_ptr = curr;
@@ -132,12 +134,27 @@ static int mm_checkheap(void) {
         if (!GET_ALLOC(HDRP(curr)) && (!GET_ALLOC(HDRP(NEXT_BLKP(curr))))) return -4;
         // 8배수 정렬
         if ((long)curr % 8 != 0) return -5;
-        
+        // 가용 블록 개수 더하기
+        if (!GET_ALLOC(HDRP(curr))) free_count_h++;
+
         curr = NEXT_BLKP(curr);
     }
 
-    // 정상
+    for (int i = 0; i < LISTLIMIT; i++) {
+        curr = segregated_free_list[i];
+        while (curr != NULL && free_count_s <= free_count_h) {
+            broken_heap_ptr = curr;
+            if (get_idx_sc(GET_SIZE(HDRP(curr))) != i) return -6;
+            free_count_s++;
+            curr = GET_P(SUCC(curr));
+        }
+    }
+
     broken_heap_ptr = NULL;
+    // 가용 블록의 수가 다르다.
+    if (free_count_h != free_count_s) return -7;
+
+    // 정상
     return 1;
 }
 
@@ -146,7 +163,7 @@ static int mm_checkheap(void) {
         if (r != 1) {                                                      \
             fprintf(stderr, "[checkheap] %s:%d code=%d bp=%p\n",           \
                     __func__, __LINE__, r, (void *)broken_heap_ptr);       \
-            if (r != -1)                                                   \
+            if (r != -1 && r != -7)                                                   \
                 fprintf(stderr, "  header=0x%x\n", GET(HDRP(broken_heap_ptr))); \
             assert(0);                                                     \
         }                                                                  \
@@ -288,6 +305,7 @@ void *mm_malloc(size_t size)
 
     if ((bp = find_fit(asize)) != NULL){
         place(bp, asize);
+        CHECKHEAP();
         return bp;
     }
 
@@ -296,6 +314,7 @@ void *mm_malloc(size_t size)
         return NULL;
     
     place(bp, asize);
+    CHECKHEAP();
     return bp;
 }
 
@@ -476,6 +495,7 @@ void *mm_realloc(void *bp, size_t size)
         mm_free(oldbp);
     }
 
+    CHECKHEAP();
     return newbp;
 
 
