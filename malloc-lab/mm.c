@@ -309,7 +309,14 @@ void *mm_malloc(size_t size)
         return bp;
     }
 
-    extend_size = MAX(asize, CHUNKSIZE);
+    void *last_blk_f = (char *)mem_heap_hi() - 7;
+
+    if (!GET_ALLOC(last_blk_f)) {
+        extend_size = MAX(asize - GET_SIZE(last_blk_f), MIN_BLK_SIZE);
+    }
+    else {
+        extend_size = MAX(asize, CHUNKSIZE);
+    }
     if ((bp = extend_heap(extend_size/WSIZE)) == NULL) 
         return NULL;
     
